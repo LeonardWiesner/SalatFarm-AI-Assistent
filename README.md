@@ -12,3 +12,12 @@ How to Install and Start:
 4. Start ollama and execute: "ollama run qwen3:4b"
 
 5. Use the Streamlit Interface to interact with Assistent! 
+
+Tested with Nvidia Geforce GTX970 and 4gb of VRAM -> only qwen 2.5:3b runs fast. 
+
+
+Latest updates:
+
+Implemented a visualization tool that allows the user to request a plot of: plantmass, water consumption, energy, illumination etc.
+
+Providing previous chat to allow follow-up questions -> Problem: increased context requieres more VRAM and a restart after longer conversations
