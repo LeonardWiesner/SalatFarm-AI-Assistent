@@ -15,6 +15,7 @@ How to Install and Start:
 
 Tested with Nvidia Geforce GTX970 and 4gb of VRAM -> only qwen 2.5:3b runs fast. 
 
+In local_agent you can adjust the model used.
 
 Latest updates:
 
