@@ -6,6 +6,7 @@ Created on Fri Jul 10 11:27:43 2026
 """
 
 import json
+from typing import Literal
 
 from simulation_tool import get_last_simulation_series
 
@@ -18,7 +19,7 @@ ALLOWED_PLOT_VARIABLES = {
 
 
 def request_simulation_plot(
-    variables: list[str],
+    variables: list[Literal["plant_mass", "electrical_energy", "water_consumption"]],
 ) -> str:
     """
     Fordert Diagramme aus der zuletzt ausgeführten Simulation an.
@@ -49,9 +50,15 @@ def request_simulation_plot(
         Die Funktion erstellt selbst kein Diagramm.
     """
 
-    available_series = get_last_simulation_series()
+    return build_simulation_plot_request(
+        variables, has_simulation=bool(get_last_simulation_series())
+    )
 
-    if not available_series:
+
+def build_simulation_plot_request(variables: list[str], has_simulation: bool) -> str:
+    """Validiert eine Diagrammanfrage gegen die Daten der jeweiligen Sitzung."""
+
+    if not has_simulation:
         return json.dumps(
             {
                 "status": "error",
@@ -75,10 +82,22 @@ def request_simulation_plot(
             ensure_ascii=False,
         )
 
+    # Kleine Modelle verwenden gelegentlich die Ergebnisnamen samt Einheit.
+    # Dieselben Größen werden auf die Bezeichner der Oberfläche abgebildet.
+    result_names = {
+        "plant_mass_kg": "plant_mass",
+        "final_plant_mass_kg": "plant_mass",
+        "electrical_energy_kwh": "electrical_energy",
+        "water_consumption_kg": "water_consumption",
+    }
+    variables = [
+        result_names.get(variable, variable) if isinstance(variable, str) else variable
+        for variable in variables
+    ]
     valid_variables = [
         variable
         for variable in variables
-        if variable in ALLOWED_PLOT_VARIABLES
+        if isinstance(variable, str) and variable in ALLOWED_PLOT_VARIABLES
     ]
 
     # Doppelte Variablen entfernen und Reihenfolge beibehalten.
@@ -89,7 +108,7 @@ def request_simulation_plot(
     invalid_variables = [
         variable
         for variable in variables
-        if variable not in ALLOWED_PLOT_VARIABLES
+        if not isinstance(variable, str) or variable not in ALLOWED_PLOT_VARIABLES
     ]
 
     if not valid_variables:

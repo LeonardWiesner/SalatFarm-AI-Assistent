@@ -18,9 +18,7 @@ import re
 
 import streamlit as st
 
-from local_agent import ask_vertical_farm_assistant
-
-from simulation_tool import get_last_simulation_series
+from local_agent import ask_vertical_farm_assistant, MODEL_NAME
 
 
 st.set_page_config(
@@ -88,7 +86,7 @@ def build_plot_payloads(
     Creates persistent plot data from LLM UI instructions.
     """
 
-    series = get_last_simulation_series()
+    series = st.session_state.agent_state.get("simulation_series", {})
 
     if not series:
         return []
@@ -302,6 +300,9 @@ def remove_thinking_trace(text: str) -> str:
 def initialize_session_state() -> None:
     """Initialisiert den Chatverlauf für die aktuelle Browsersitzung."""
 
+    if "agent_state" not in st.session_state:
+        st.session_state.agent_state = {}
+
     if "messages" not in st.session_state:
         st.session_state.messages = [
             {
@@ -319,7 +320,9 @@ def initialize_session_state() -> None:
 
 
 def clear_chat() -> None:
-    """Setzt den sichtbaren Chatverlauf zurück."""
+    """Setzt Chat, Konfiguration, Kennzahlen und Diagrammdaten zurück."""
+
+    st.session_state.agent_state = {}
 
     st.session_state.messages = [
         {
@@ -353,7 +356,7 @@ st.caption(
 with st.sidebar:
     st.header("Modell")
 
-    st.write("**LLM:** Qwen3 4B")
+    st.write(f"**LLM:** {MODEL_NAME}")
     st.write("**Simulation:** OpenModelica")
     st.write("**Schnittstelle:** OMPython")
 
@@ -446,6 +449,7 @@ if prompt:
                         conversation_history=(
                             history_for_llm
                         ),
+                        agent_state=st.session_state.agent_state,
                     )
                 )
     

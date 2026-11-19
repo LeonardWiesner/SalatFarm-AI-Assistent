@@ -8,18 +8,68 @@ Created on Tue Jul  7 16:18:45 2026
 from __future__ import annotations
 
 import json
+from inspect import signature
 from typing import Any
 
 from ollama import ChatResponse, chat
 
-from simulation_tool import run_vertical_farm_simulation
+from simulation_tool import run_vertical_farm_simulation, get_last_simulation_series
 
 from modelica_tools import search_modelica_code
 
-from visualization_tool import request_simulation_plot
+from visualization_tool import request_simulation_plot, build_simulation_plot_request
 
 
-MODEL_NAME = "qwen3:4b"
+MODEL_NAME = "qwen2.5:3b"
+MAX_HISTORY_TURNS = 6
+
+# Alle Felder sind optional: fehlend bedeutet bisherigen Wert übernehmen.
+SIMULATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run_vertical_farm_simulation",
+        "description": (
+            "Simuliert die Vertical Farm. Übergib nur vom Nutzer ausdrücklich "
+            "angegebene oder geänderte Parameter. Python ergänzt fehlende Werte "
+            "aus der letzten erfolgreichen Konfiguration, sonst aus Standardwerten."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "PPFD": {"type": "number", "description": "PPFD in µmol/(m² s), 0 bis 750."},
+                "photoperiod_h_per_day": {"type": "number", "description": "Beleuchtungsdauer in h/d, 0 bis 24."},
+                "simulation_duration_days": {"type": "number", "description": "Maximale Dauer in Tagen, größer 0 bis 120."},
+                "number_of_plants": {"type": "integer", "description": "Pflanzenanzahl, 1 bis 10000."},
+                "stop_at_harvest": {"type": "boolean", "description": "Bei Erntereife abbrechen."},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def default_simulation_parameters() -> dict[str, Any]:
+    """Verwendet dieselben Standardwerte wie das Simulationstool."""
+    return {
+        name: parameter.default
+        for name, parameter in signature(run_vertical_farm_simulation).parameters.items()
+    }
+
+
+def recent_conversation(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Behält die letzten sechs Nutzeranfragen samt zugehörigen Antworten."""
+    messages = [
+        {"role": message["role"], "content": message["content"]}
+        for message in history
+        if message.get("role") in {"user", "assistant"}
+        and isinstance(message.get("content"), str)
+    ]
+    user_indices = [i for i, message in enumerate(messages) if message["role"] == "user"]
+    if not user_indices:
+        return []
+    start = user_indices[max(0, len(user_indices) - MAX_HISTORY_TURNS)]
+    return messages[start:]
 
 SYSTEM_PROMPT = """
 Du bist ein technischer Simulationsassistent für ein
@@ -45,10 +95,15 @@ Deine Aufgaben:
   Darstellung fragt.
 - Gib bei allen technischen Größen Einheiten an.
 - Wenn der Nutzer nur einen Parameter verändert, übernimm die übrigen
-  Parameter aus der vorherigen Simulationsanfrage.
+  Parameter nicht selbst in den Tool-Aufruf. Übergib nur ausdrücklich
+  genannte Änderungen; Python ergänzt die übrigen Parameter.
 - Nenne bei einer neuen Simulation alle tatsächlich verwendeten Parameter.
 - Unterscheide zwischen Simulationsergebnis und Interpretation.
-- Verwende 30 Tage Simulationsdauer, wenn keine Dauer genannt wird.
+- Bezeichne requested_parameters.simulation_duration_days als maximale Dauer
+  und simulation_duration_days im Ergebnis als tatsächliche Laufzeit bis zum Ende.
+- Ohne bisherige Konfiguration gilt eine maximale Simulationsdauer von 30 Tagen.
+- Der aktuelle Python-Sitzungszustand ist für Konfiguration und letztes Ergebnis
+  maßgeblich. Ältere Chatnachrichten können frühere Konfigurationen enthalten.
 - PPFD wird in µmol/(m² s) angegeben.
 - Die Photoperiode wird in Stunden pro Tag angegeben.
 - Mit der Abfrage stop_at_harvest kann die Simulation bei Erreichen der Erntmasse abgebrochen werden
@@ -71,6 +126,7 @@ AVAILABLE_TOOLS = {
 def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
+    agent_state: dict[str, Any] | None = None,
 ) -> str:
     """Führt ausschließlich freigegebene Python-Tools aus."""
 
@@ -86,6 +142,28 @@ def execute_tool(
         )
 
     try:
+        if tool_name == "run_vertical_farm_simulation":
+            state = agent_state if agent_state is not None else {}
+            parameters = {
+                **default_simulation_parameters(),
+                **state.get("simulation_parameters", {}),
+                **arguments,
+            }
+            result = json.loads(function(**parameters))
+            result["requested_parameters"] = parameters
+            if result.get("status") == "success":
+                # Die angeforderte Dauer bleibt auch bei vorzeitiger Ernte erhalten.
+                state.update(
+                    simulation_parameters=parameters,
+                    last_simulation_result=result,
+                    simulation_series=get_last_simulation_series(),
+                )
+            return json.dumps(result, ensure_ascii=False)
+        if tool_name == "request_simulation_plot" and agent_state is not None:
+            return build_simulation_plot_request(
+                **arguments,
+                has_simulation=bool(agent_state.get("simulation_series")),
+            )
         return function(**arguments)
 
     except Exception as exc:
@@ -101,17 +179,27 @@ def execute_tool(
 def ask_vertical_farm_assistant(
     user_message: str,
     conversation_history: list[dict[str, str]] | None = None,
+    agent_state: dict[str, Any] | None = None,
 ) -> dict:
     """
     Verarbeitet eine Nutzeranfrage und erlaubt dem lokalen LLM,
     die Modelica-Simulation aufzurufen.
     """
 
+    state = agent_state if agent_state is not None else {}
+    session_context = {
+        "simulation_parameters": state.get(
+            "simulation_parameters", default_simulation_parameters()
+        ),
+        "last_simulation_result": state.get("last_simulation_result"),
+    }
     messages: list[Any] = [
         {
             "role": "system",
-            "content": SYSTEM_PROMPT,
+            "content": SYSTEM_PROMPT + "\nAktueller Python-Sitzungszustand:\n"
+            + json.dumps(session_context, ensure_ascii=False),
         },
+        *recent_conversation(conversation_history or []),
         {
             "role": "user",
             "content": user_message,
@@ -126,7 +214,7 @@ def ask_vertical_farm_assistant(
             model=MODEL_NAME,
             messages=messages,
             tools=[
-                run_vertical_farm_simulation,
+                SIMULATION_TOOL,
                 search_modelica_code,
                 request_simulation_plot,
             ],
@@ -174,6 +262,7 @@ def ask_vertical_farm_assistant(
             tool_result = execute_tool(
                 tool_name=tool_name,
                 arguments=arguments,
+                agent_state=state,
             )
     
             try:
@@ -204,13 +293,6 @@ def ask_vertical_farm_assistant(
         ),
         "ui_actions": ui_actions,
     }
-
-    return (
-        "Die maximale Anzahl an Tool-Aufrufen wurde erreicht. "
-        "Möglicherweise konnte das Modell die Anfrage nicht "
-        "eindeutig verarbeiten."
-    )
-
 
 if __name__ == "__main__":
     question = (
