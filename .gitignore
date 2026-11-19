@@ -1,0 +1,32 @@
+# Python Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtuelle Python-Umgebungen
+.venv/
+venv/
+env/
+
+# Zugangsdaten / Konfiguration
+.env
+.env.*
+!.env.example
+
+# OpenModelica Simulationsergebnisse
+*.mat
+*.fmu
+*.exe
+*.o
+*.obj
+
+# Temporäre Dateien
+Temp/
+*.tmp
+
+# Editor
+.vscode/
+
+# Betriebssystem
+Thumbs.db
+.DS_Store
